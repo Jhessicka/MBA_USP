@@ -1,0 +1,123 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Função para converter "Mês Ano" para "Ano-Mês"
+def convert_mes_ano(mes_ano):
+    months = {
+        'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04',
+        'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08',
+        'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'
+    }
+    mes, ano = mes_ano.split()
+    return f"{ano}-{months[mes.lower()]}"
+
+
+# Primeira parte: Processamento do arquivo de produção
+file_path = r'C:\Users\taicy\Documents\TCC\Produção\Produção De Santa Catarina desde 2010.xlsx'
+
+df = pd.read_excel(file_path, header=None)
+
+# Verificar se o DataFrame tem pelo menos três linhas (0, 1, 2)
+if len(df) >= 3:
+    df.iloc[1] = df.iloc[1].astype(str).apply(lambda x: x.split(maxsplit=1)[1] if len(x.split()) > 1 else x)
+    
+    new_df = pd.DataFrame({
+        'Mês-Ano': df.iloc[0].apply(convert_mes_ano),
+        'Tipo Produção': df.iloc[1],
+        'Produção': df.iloc[2].fillna(0).replace('-', 0).astype(int)
+    })
+else:
+    print("O DataFrame não possui pelo menos três linhas. Verifique o arquivo Excel.")
+
+# Adicionar coluna de mês numérico (sem o ano) em new_df
+new_df['Mes'] = pd.to_datetime(new_df['Mês-Ano']).dt.month.astype(str).str.zfill(2)
+
+# Segunda parte: Processamento das bases de precipitação e temperatura
+caminho_bases = Path(r'C:\Users\taicy\Documents\TCC\Precipitação e Temperatura')
+base_consolidado = pd.DataFrame()
+
+for arquivo in caminho_bases.iterdir():
+    try:
+        df_temp = pd.read_csv(caminho_bases / arquivo.name, encoding='latin1', delimiter=';', on_bad_lines='skip')  # Ignorar linhas com erro
+        base_consolidado = pd.concat([base_consolidado, df_temp], ignore_index=True)
+    except pd.errors.ParserError as e:
+        print(f'Erro ao ler o arquivo {arquivo.name}: {e}')
+
+base_consolidado['Data Medicao'] = pd.to_datetime(base_consolidado['Data Medicao'], format='%d/%m/%Y')
+base_consolidado['Precipitacao Total mm'] = base_consolidado['Precipitacao Total mm'].astype(str).str.replace(',', '.')
+base_consolidado['Temperatura Media'] = base_consolidado['Temperatura Media'].astype(str).str.replace(',', '.')
+
+base_consolidado['Precipitacao Total mm'] = pd.to_numeric(base_consolidado['Precipitacao Total mm'], errors='coerce')
+base_consolidado['Temperatura Media'] = pd.to_numeric(base_consolidado['Temperatura Media'], errors='coerce')
+
+# Convertendo inf e -inf para NaN explicitamente
+base_consolidado.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+base_consolidado['AnoMes'] = base_consolidado['Data Medicao'].dt.to_period('M')
+
+# Agrupamento e média mensal
+medias_mensais = base_consolidado.groupby('AnoMes')[['Precipitacao Total mm', 'Temperatura Media']].mean().round(2).reset_index()
+
+# Converter 'AnoMes' para string antes de filtrar
+medias_mensais['AnoMes'] = medias_mensais['AnoMes'].astype(str)
+
+# Filtrar os meses desejados
+meses_desejados = ['10', '11', '12', '01', '02', '03']
+medias_mensais = medias_mensais[medias_mensais['AnoMes'].str[-2:].isin(meses_desejados)]
+
+# Leitura do arquivo TSM
+file_path_tsm = r'C:\Users\taicy\Documents\TCC\TSM\TSM.xlsx'
+
+df_tsm = pd.read_excel(file_path_tsm)
+
+# Filtrar os meses desejados
+df_tsm['MON'] = df_tsm['MON'].astype(str).str.zfill(2)
+df_tsm['AnoMes'] = df_tsm['YR'].astype(str) + '-' + df_tsm['MON']
+df_tsm = df_tsm[df_tsm['MON'].isin(meses_desejados)]
+
+# Combinar os dados
+def criar_tabela(tipo_producao):
+    filtro = new_df['Tipo Produção'] == tipo_producao
+    df_filtrado = new_df[filtro]
+    
+    # Mesclar com médias mensais de precipitação e temperatura
+    tabela_combinada = pd.merge(df_filtrado, medias_mensais, left_on='Mês-Ano', right_on='AnoMes', how='left')
+    
+    # Renomear coluna ANOM para TSM durante a mesclagem com df_tsm
+    tabela_combinada = pd.merge(tabela_combinada, df_tsm[['AnoMes', 'ANOM']], left_on='Mês-Ano', right_on='AnoMes', how='left')
+    tabela_combinada.rename(columns={'ANOM': 'TSM'}, inplace=True)
+    
+    # Selecionar colunas desejadas
+    tabela_combinada = tabela_combinada[['Mês-Ano', 'Tipo Produção', 'Produção', 'Precipitacao Total mm', 'Temperatura Media', 'TSM']]
+    
+    # Filtrar os meses desejados após a mesclagem
+    tabela_combinada = tabela_combinada[tabela_combinada['Mês-Ano'].str[-2:].isin(meses_desejados)]
+    
+    return tabela_combinada
+
+# Criação das tabelas para cada tipo de produção
+tabela_arroz = criar_tabela('Arroz')
+tabela_milho_1safra = criar_tabela('Milho (1ª Safra)')
+tabela_milho_2safra = criar_tabela('Milho (2ª Safra)')
+tabela_soja = criar_tabela('Soja')
+
+# Análise de correlação para cada tipo de produto
+def analisar_correlacao(tabela):
+    correlacao = tabela[['Produção', 'Precipitacao Total mm', 'Temperatura Media', 'TSM']].corr()
+    print("\nMatriz de Correlação:")
+    print(correlacao)
+
+# Aplicar análise de correlação para cada tipo de produto
+print("Análise de Correlação para Arroz:")
+analisar_correlacao(tabela_arroz)
+
+print("Análise de Correlação para Milho (1ª Safra):")
+analisar_correlacao(tabela_milho_1safra)
+
+print("Análise de Correlação para Milho (2ª Safra):")
+analisar_correlacao(tabela_milho_2safra)
+
+print("Análise de Correlação para Soja:")
+analisar_correlacao(tabela_soja)
